@@ -55,7 +55,8 @@ async fn main() -> std::io::Result<()> {
 // Define a struct to hold the token mappings, with Serialize and Deserialize traits for easy conversion
 #[derive(Serialize, Deserialize)]
 struct TokenVault {
-    tokens: HashMap<String, String>,
+    word_to_token: HashMap<String, String>,
+    token_to_word: HashMap<String, String>
 }
 
 // Define the main struct for persistent token storage
@@ -66,25 +67,36 @@ struct PersistentTokenVault {
 
 impl PersistentTokenVault {
     // Create a new PersistentTokenVault or load an existing one
-    fn new(path: &str) -> Result<Self, sled::Error> {
-        let db = sled::open(path)?;
-        let vault = match db.get("vault")? {
-            Some(data) => bincode::deserialize(&data).unwrap_or(TokenVault { tokens: HashMap::new() }),
-            None => TokenVault { tokens: HashMap::new() },
-        };
-        Ok(Self { db, vault })
-    }
+		fn new(path: &str) -> Result<Self, sled::Error> {
+				let db = sled::open(path)?;
+				let vault = match db.get("vault")? {
+						Some(data) => bincode::deserialize(&data).unwrap_or(TokenVault {
+								word_to_token: HashMap::new(),
+								token_to_word: HashMap::new(),
+						}),
+						None => TokenVault {
+								word_to_token: HashMap::new(),
+								token_to_word: HashMap::new(),
+						},
+				};
+				Ok(Self { db, vault })
+		}
 
     // Set a new token or update an existing one
-    fn set_token(&mut self, key: &str, value: &str) -> Result<(), sled::Error> {
-        self.vault.tokens.insert(key.to_string(), value.to_string());
-        self.save()
+		fn set_token(&mut self, word: &str, token: &str) -> Result<(), sled::Error> {
+				self.vault.word_to_token.insert(word.to_string(), token.to_string());
+				self.vault.token_to_word.insert(token.to_string(), word.to_string());
+				self.save()
     }
 
     // Retrieve a token if it exists
-    fn get_token(&self, key: &str) -> Option<String> {
-        self.vault.tokens.get(key).cloned()
-    }
+		fn get_token(&self, word: &str) -> Option<String> {
+				self.vault.word_to_token.get(word).cloned()
+		}
+
+		fn get_word(&self, token: &str) -> Option<String> {
+				self.vault.token_to_word.get(token).cloned()
+		}
 
     // Save the current state of the vault to disk
     fn save(&self) -> Result<(), sled::Error> {
@@ -118,6 +130,7 @@ fn generate_token() -> String {
     // Encode the hash in URL-safe Base64
     general_purpose::URL_SAFE_NO_PAD.encode(&result)[0..TOKEN_LEN].to_string()
 }
+
 fn tokenize(vault: &mut PersistentTokenVault, input: &str) -> Result<String, sled::Error> {
     let words: Vec<String> = input.split_whitespace().map(|s| s.to_string()).collect();
     let mut tokenized = Vec::new();
@@ -126,8 +139,18 @@ fn tokenize(vault: &mut PersistentTokenVault, input: &str) -> Result<String, sle
         let token = match vault.get_token(&word) {
             Some(t) => t,
             None => {
-                let new_token = generate_token();
-                vault.set_token(&new_token, &word)?;
+                let mut count = 0;
+                let mut new_token;
+                // Ideally below loop should not be tried more than 2 times
+                // If fails, should throw an error. count used for preventing overrun
+                loop {
+                    new_token = generate_token();
+                    count += 1;
+                    if vault.get_word(&new_token).is_none() || count == 2 {
+                        break;
+                    }
+                }
+                vault.set_token(&word, &new_token)?;
                 new_token
             }
         };
@@ -136,3 +159,4 @@ fn tokenize(vault: &mut PersistentTokenVault, input: &str) -> Result<String, sle
 
     Ok(tokenized.join(" "))
 }
+
